@@ -50,4 +50,28 @@ class AppConfig(context: Context) {
     var isServiceRunning: Boolean
         get() = prefs.getBoolean("service_running", false)
         set(value) = prefs.edit().putBoolean("service_running", value).apply()
+
+    var forwardSim1: Boolean
+        get() = prefs.getBoolean("forward_sim_1", true)
+        set(value) = prefs.edit().putBoolean("forward_sim_1", value).apply()
+
+    var forwardSim2: Boolean
+        get() = prefs.getBoolean("forward_sim_2", true)
+        set(value) = prefs.edit().putBoolean("forward_sim_2", value).apply()
+
+    var forwardNotifications: Boolean
+        get() = prefs.getBoolean("forward_notifications", false)
+        set(value) = prefs.edit().putBoolean("forward_notifications", value).apply()
+
+    var forwardWhatsApp: Boolean
+        get() = prefs.getBoolean("forward_whatsapp", true)
+        set(value) = prefs.edit().putBoolean("forward_whatsapp", value).apply()
+
+    var isOnboardingCompleted: Boolean
+        get() = prefs.getBoolean("onboarding_completed", false)
+        set(value) = prefs.edit().putBoolean("onboarding_completed", value).apply()
+
+    fun resetAll() {
+        prefs.edit().clear().apply()
+    }
 }

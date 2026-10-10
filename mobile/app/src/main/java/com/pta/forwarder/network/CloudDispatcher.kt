@@ -1,5 +1,6 @@
 package com.pta.forwarder.network
 
+import android.content.Context
 import android.util.Log
 import com.pta.forwarder.data.AppConfig
 import com.pta.forwarder.util.OtpParser
@@ -31,6 +32,22 @@ class CloudDispatcher(private val config: AppConfig) {
                 trimmed.startsWith("discord.com/api/webhooks/") -> "https://$trimmed"
                 trimmed.contains("/") && !trimmed.contains(" ") -> "https://discord.com/api/webhooks/$trimmed"
                 else -> trimmed
+            }
+        }
+
+        fun testDiscordWebhook(context: Context, webhookUrl: String, onResult: (Boolean, String) -> Unit) {
+            val config = AppConfig(context)
+            val dispatcher = CloudDispatcher(config)
+            val embed = JSONObject().apply {
+                put("title", "PTA Forwarder Test")
+                put("description", "Discord webhook is verified and active.")
+                put("color", 0x16A34A)
+            }
+            dispatcher.sendDiscord(webhookUrl, embed) { success, msg ->
+                val finalMsg = if (success) "Connection successful! Discord received test ping." else (msg ?: "Failed to connect to Discord")
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onResult(success, finalMsg)
+                }
             }
         }
     }
@@ -66,20 +83,124 @@ class CloudDispatcher(private val config: AppConfig) {
 
         // 2. Dispatch to Discord
         if (config.discordEnabled && config.discordWebhookUrl.isNotBlank()) {
-            val embed = JSONObject().apply {
-                put("title", if (parsedOtp != null) "🔑 OTP: ${parsedOtp.code}" else "📩 New SMS$simTag")
-                put("description", body)
-                put("color", if (parsedOtp != null) 0x10B981 else 0x2563EB) // Green for OTP, Blue for normal SMS
-                val fields = JSONArray().apply {
+            val embed = createDiscordEmbed(sender, body, formattedTime, simTag, simInfo, parsedOtp)
+            sendDiscord(config.discordWebhookUrl, embed)
+        }
+    }
+
+    fun dispatchSmsSync(sender: String, body: String, timestamp: Long, simInfo: com.pta.forwarder.util.SimInfo? = null): Boolean {
+        val parsedOtp = OtpParser.extractOtp(body)
+        val formattedTime = timeFormat.format(Date(timestamp))
+        val simTag = if (simInfo != null) " [${simInfo.fullTag}]" else ""
+        var success = true
+
+        // 1. Telegram
+        if (config.telegramEnabled && config.telegramBotToken.isNotBlank() && config.telegramChatId.isNotBlank()) {
+            val telegramText = buildString {
+                if (parsedOtp != null) {
+                    append("🔑 <b>OTP: <code>${parsedOtp.code}</code></b>")
+                    if (parsedOtp.serviceName != null) {
+                        append(" (${parsedOtp.serviceName})")
+                    }
+                    append("\n\n")
+                }
+                append("📩 <b>New SMS$simTag</b>\n")
+                append("👤 <b>From:</b> <code>${escapeHtml(sender)}</code>\n")
+                if (simInfo != null) {
+                    append("📶 <b>Network:</b> ${escapeHtml(simInfo.fullTag)}\n")
+                }
+                append("🕒 <b>Time:</b> ${escapeHtml(formattedTime)}\n\n")
+                append("📝 <b>Message:</b>\n${escapeHtml(body)}")
+            }
+            val tgOk = sendTelegramSync(config.telegramBotToken, config.telegramChatId, telegramText)
+            if (!tgOk) success = false
+        }
+
+        // 2. Discord
+        if (config.discordEnabled && config.discordWebhookUrl.isNotBlank()) {
+            val embed = createDiscordEmbed(sender, body, formattedTime, simTag, simInfo, parsedOtp)
+            val dcOk = sendDiscordSync(config.discordWebhookUrl, embed)
+            if (!dcOk) success = false
+        }
+
+        return success
+    }
+
+    private fun createDiscordEmbed(
+        sender: String,
+        body: String,
+        formattedTime: String,
+        simTag: String,
+        simInfo: com.pta.forwarder.util.SimInfo?,
+        parsedOtp: com.pta.forwarder.util.ParsedOtp?
+    ): JSONObject {
+        return JSONObject().apply {
+            put("title", if (parsedOtp != null) "🔑 OTP: ${parsedOtp.code}" else "📩 New SMS$simTag")
+            put("description", body)
+            put("color", if (parsedOtp != null) 0x10B981 else 0x2563EB)
+            val fields = JSONArray().apply {
+                put(JSONObject().apply {
+                    put("name", "From")
+                    put("value", sender)
+                    put("inline", true)
+                })
+                if (simInfo != null) {
                     put(JSONObject().apply {
-                        put("name", "From")
-                        put("value", sender)
+                        put("name", "SIM / Network")
+                        put("value", simInfo.fullTag)
                         put("inline", true)
                     })
-                    if (simInfo != null) {
+                }
+                put(JSONObject().apply {
+                    put("name", "Time")
+                    put("value", formattedTime)
+                    put("inline", true)
+                })
+                if (parsedOtp?.serviceName != null) {
+                    put(JSONObject().apply {
+                        put("name", "Service")
+                        put("value", parsedOtp.serviceName)
+                        put("inline", true)
+                    })
+                }
+            }
+            put("fields", fields)
+        }
+    }
+
+    fun dispatchNotification(appName: String, title: String, text: String, timestamp: Long) {
+        val formattedTime = timeFormat.format(Date(timestamp))
+
+        // 1. Dispatch to Telegram
+        if (config.telegramEnabled && config.telegramBotToken.isNotBlank() && config.telegramChatId.isNotBlank()) {
+            val telegramText = buildString {
+                append("💬 <b>${escapeHtml(appName)} Notification</b>\n")
+                if (title.isNotBlank()) {
+                    append("👤 <b>From:</b> <code>${escapeHtml(title)}</code>\n")
+                }
+                append("🕒 <b>Time:</b> ${escapeHtml(formattedTime)}\n\n")
+                append("📝 <b>Message:</b>\n${escapeHtml(text)}")
+            }
+            sendTelegram(config.telegramBotToken, config.telegramChatId, telegramText)
+        }
+
+        // 2. Dispatch to Discord
+        if (config.discordEnabled && config.discordWebhookUrl.isNotBlank()) {
+            val isWa = appName.contains("WhatsApp", ignoreCase = true)
+            val embed = JSONObject().apply {
+                put("title", if (title.isNotBlank()) "💬 $appName: $title" else "💬 $appName Notification")
+                put("description", text)
+                put("color", if (isWa) 0x25D366 else 0x3B82F6) // WhatsApp green or clean blue
+                val fields = JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("name", "App")
+                        put("value", appName)
+                        put("inline", true)
+                    })
+                    if (title.isNotBlank()) {
                         put(JSONObject().apply {
-                            put("name", "SIM / Network")
-                            put("value", simInfo.fullTag)
+                            put("name", "Sender")
+                            put("value", title)
                             put("inline", true)
                         })
                     }
@@ -88,13 +209,6 @@ class CloudDispatcher(private val config: AppConfig) {
                         put("value", formattedTime)
                         put("inline", true)
                     })
-                    if (parsedOtp?.serviceName != null) {
-                        put(JSONObject().apply {
-                            put("name", "Service")
-                            put("value", parsedOtp.serviceName)
-                            put("inline", true)
-                        })
-                    }
                 }
                 put("fields", fields)
             }
@@ -281,6 +395,72 @@ class CloudDispatcher(private val config: AppConfig) {
                 }
             }
         })
+    }
+
+    fun sendTelegramSync(token: String, chatId: String, htmlText: String): Boolean {
+        val url = "https://api.telegram.org/bot$token/sendMessage"
+        val jsonPayload = JSONObject().apply {
+            put("chat_id", chatId)
+            put("text", htmlText)
+            put("parse_mode", "HTML")
+        }.toString()
+
+        val request = try {
+            Request.Builder()
+                .url(url)
+                .post(jsonPayload.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+        } catch (e: Exception) {
+            Log.e(TAG, "Invalid Telegram URL (sync)", e)
+            return false
+        }
+
+        return try {
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Telegram error: ${response.code} - ${response.body?.string()}")
+                    false
+                } else {
+                    Log.i(TAG, "Telegram sent successfully (sync)")
+                    true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send to Telegram (sync)", e)
+            false
+        }
+    }
+
+    fun sendDiscordSync(webhookUrl: String, embed: JSONObject): Boolean {
+        val cleanUrl = normalizeDiscordWebhookUrl(webhookUrl)
+        val jsonPayload = JSONObject().apply {
+            put("embeds", JSONArray().put(embed))
+        }.toString()
+
+        val request = try {
+            Request.Builder()
+                .url(cleanUrl)
+                .post(jsonPayload.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+        } catch (e: Exception) {
+            Log.e(TAG, "Invalid Discord URL (sync)", e)
+            return false
+        }
+
+        return try {
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Discord error: ${response.code} - ${response.body?.string()}")
+                    false
+                } else {
+                    Log.i(TAG, "Discord sent successfully (sync)")
+                    true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send to Discord (sync)", e)
+            false
+        }
     }
 
     private fun escapeHtml(text: String): String {

@@ -77,4 +77,19 @@ object SimUtil {
             carrierName = detectedCarrier
         )
     }
+
+    fun getCarrierName(context: Context, slotIndex: Int): String? {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+            try {
+                val subManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+                val activeSubs = subManager?.activeSubscriptionInfoList
+                val match = activeSubs?.find { it.simSlotIndex == slotIndex }
+                if (match != null) {
+                    val name = match.carrierName?.toString()?.trim() ?: match.displayName?.toString()?.trim()
+                    if (!name.isNullOrBlank()) return name
+                }
+            } catch (_: Exception) {}
+        }
+        return null
+    }
 }

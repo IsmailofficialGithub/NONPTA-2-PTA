@@ -39,39 +39,92 @@ class OtpNotificationService : NotificationListenerService() {
 
     private var lastExtractedCode: String? = null
     private var lastExtractedTime: Long = 0
+    private var lastSenderNotificationKey: String? = null
+    private var lastSenderNotificationTime: Long = 0
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         if (sbn == null) return
 
         val config = AppConfig(this)
-        if (config.role != DeviceRole.RECEIVER) {
-            return
-        }
-
         val packageName = sbn.packageName
-        if (!MONITORED_PACKAGES.contains(packageName)) {
+
+        // 1. RECEIVER MODE: Intercept Telegram/Discord and extract banking OTPs
+        if (config.role == DeviceRole.RECEIVER) {
+            if (!MONITORED_PACKAGES.contains(packageName)) return
+
+            val extras = sbn.notification.extras ?: return
+            val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+            val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+            val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: ""
+
+            val combinedContent = "$title\n$text\n$bigText"
+            Log.d(TAG, "Inspecting notification from $packageName")
+
+            val parsedOtp = OtpParser.extractOtp(combinedContent)
+            if (parsedOtp != null) {
+                val now = System.currentTimeMillis()
+                if (parsedOtp.code == lastExtractedCode && (now - lastExtractedTime) < 3000) {
+                    return
+                }
+                lastExtractedCode = parsedOtp.code
+                lastExtractedTime = now
+
+                handleExtractedOtp(parsedOtp.code, parsedOtp.serviceName)
+            }
             return
         }
 
-        val extras = sbn.notification.extras ?: return
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
-        val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
-        val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: ""
+        // 2. SENDER MODE: Forward App Notifications (e.g. WhatsApp) to Telegram/Discord
+        if (config.role == DeviceRole.SENDER && config.isServiceRunning && config.forwardNotifications) {
+            if (sbn.isOngoing) return
 
-        val combinedContent = "$title\n$text\n$bigText"
-        Log.d(TAG, "Inspecting notification from $packageName")
+            val isWhatsApp = (packageName == "com.whatsapp" || packageName == "com.whatsapp.w4b") && config.forwardWhatsApp
+            if (!isWhatsApp) return
 
-        val parsedOtp = OtpParser.extractOtp(combinedContent)
-        if (parsedOtp != null) {
-            // Deduplicate within 3 seconds
-            val now = System.currentTimeMillis()
-            if (parsedOtp.code == lastExtractedCode && (now - lastExtractedTime) < 3000) {
+            val extras = sbn.notification.extras ?: return
+            val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim() ?: ""
+            val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim()
+                ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim()
+                ?: ""
+
+            if (text.isBlank()) return
+            if (text.contains("Checking for new messages", ignoreCase = true) ||
+                text.contains("WhatsApp Web", ignoreCase = true) ||
+                text.contains("incoming call", ignoreCase = true)) {
                 return
             }
-            lastExtractedCode = parsedOtp.code
-            lastExtractedTime = now
 
-            handleExtractedOtp(parsedOtp.code, parsedOtp.serviceName)
+            val key = "$packageName:$title:$text"
+            val now = System.currentTimeMillis()
+            if (key == lastSenderNotificationKey && (now - lastSenderNotificationTime) < 2000) {
+                return
+            }
+            lastSenderNotificationKey = key
+            lastSenderNotificationTime = now
+
+            val appLabel = if (isWhatsApp) "WhatsApp" else packageName
+            Log.d(TAG, "Forwarding app notification from $appLabel ($title: $text)")
+
+            // Dispatch to Cloud
+            val dispatcher = com.pta.forwarder.network.CloudDispatcher(config)
+            dispatcher.dispatchNotification(appLabel, title, text, now)
+
+            // Log to local messages feed
+            val logManager = com.pta.forwarder.data.MessageLogManager(this)
+            val parsedOtp = OtpParser.extractOtp(text)
+            logManager.addMessage(
+                sender = if (title.isNotBlank()) "$appLabel: $title" else appLabel,
+                body = text,
+                otp = parsedOtp?.code,
+                simTag = appLabel,
+                timestamp = now,
+                status = "Forwarded"
+            )
+
+            val localIntent = Intent(com.pta.forwarder.data.MessageLogManager.ACTION_NEW_MESSAGE).apply {
+                setPackage(this@OtpNotificationService.packageName)
+            }
+            sendBroadcast(localIntent)
         }
     }
 
