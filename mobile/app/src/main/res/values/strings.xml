@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">PTA Forwarder</string>
+    <string name="role_sender">Sender Mode (PTA Phone)</string>
+    <string name="role_receiver">Receiver Mode (Non-PTA Phone)</string>
+    <string name="sender_desc">Captures incoming SMS and calls on this phone and forwards them directly to Telegram and Discord.</string>
+    <string name="receiver_desc">Listens for incoming Telegram/Discord notifications on this phone and automatically copies banking OTPs to the clipboard.</string>
+</resources>

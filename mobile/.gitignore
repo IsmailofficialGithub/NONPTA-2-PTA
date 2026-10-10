@@ -1,0 +1,44 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Local configuration
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+.navigation/
+
+# Kotlin
+.kotlin/
+
+# Android build outputs
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing keys and secrets
+*.jks
+*.keystore
+keystore.properties
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+
+# Generated files
+/generated/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
